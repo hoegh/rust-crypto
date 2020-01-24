@@ -1,18 +1,32 @@
 mod iters {
     use std::mem;
 
-    pub struct ShaPadder<I> where I: IntoIterator<Item = u8> {
+    use super::conv::u32_from_vec_slice;
+
+    struct BlockParams{
+        size: usize,
+        reserve: usize,
+    }
+
+    /// SHA message stream padder
+    ///
+    /// SHA hashes are calculated over fixed length block with the length appended. Thus the message
+    /// stream must be padded.
+    struct ShaPadder<I> where I: IntoIterator<Item = u8> {
+        block_params: BlockParams,
+        has_message: bool,
         message_count: usize,
-        message_done: bool,
         padding_left: usize,
-        size_bytes: [u8;8], //size is measure in bits, but these are the bytes that make up the number
+        bit_size_as_bytes: [u8;8], //size is measure in bits, but these are the bytes that make up the number
         message_iter: I::IntoIter,
     }
 
     impl<I> ShaPadder<I> where I: IntoIterator<Item = u8> {
-        pub fn new(message: I) -> ShaPadder<I> {
-            ShaPadder{message_count: 0, message_done: false, message_iter: message.into_iter(),
-                size_bytes: [0u8;8], padding_left: 0}
+        /// Given the block parameters, take a message stream of u8 data and implement an Iterator
+        /// that emits a padded stream of u8 data.
+        pub fn new(params: BlockParams, message: I) -> ShaPadder<I> {
+            ShaPadder{block_params: params, message_count: 0, has_message: true, message_iter: message.into_iter(),
+                bit_size_as_bytes: [0u8;8], padding_left: 0}
         }
     }
 
@@ -20,43 +34,76 @@ mod iters {
         type Item = u8;
 
         fn next(&mut self) -> Option<u8> {
-            if self.message_done {
-                if self.padding_left == 0 {
-                    None
-                } else {
-                    self.padding_left -= 1;
-                    if self.padding_left < mem::size_of::<u64>() {
-                        // println!("padding.left = {}, value = {}", self.padding_left, self.size_bytes[self.padding_left]);
-
-                        Some(self.size_bytes[self.padding_left])
-                    } else {
-                        Some(0)
-                    }
-                }
-            } else {
+            if self.has_message {
+                // stage one, pass on message
                 match self.message_iter.next() {
                     Some(b) => {
                         self.message_count += 1;
                         Some(b)
                     }
                     None => {
-                        self.message_done = true;
-                        self.size_bytes = ((self.message_count*8) as u64).to_le_bytes(); //the size is measure in bits, but counted in bytes
+                        //out of message - calculate padding length and size in bits
+                        self.has_message = false; //go to stage 2
+                        self.bit_size_as_bytes = ((self.message_count*8) as u64).to_le_bytes(); //the size is measure in bits, but counted in bytes
 
-                        let block_size = 64;
-                        self.padding_left = block_size - (self.message_count % block_size) - 1;
-                        if self.padding_left < mem::size_of::<u64>() {
-                            self.padding_left += block_size;
+                        self.padding_left = self.block_params.size - (self.message_count % self.block_params.size) - 1;
+                        if self.padding_left < self.block_params.reserve {
+                            // if there isn't enough space for the reserve, add another blocksize worth of padding
+                            self.padding_left += self.block_params.size;
                         }
 
-                        // println!("count = {}", self.message_count);
-                        // println!("as bytes = {:?}", self.size_bytes);
-
+                        //emit start-of-padding marker
                         Some(0x80u8)
                     }
                 }
+            } else {
+                // stage two, emit padding and bit size counter
+                if self.padding_left == 0 {
+                    None
+                } else {
+                    self.padding_left -= 1;
+                    if self.padding_left >= mem::size_of::<u64>() {
+                        // still padding left to be emitted before the bit size counter
+                        Some(0)
+                    } else {
+                        // emit a byte from the bit size counter
+                        Some(self.bit_size_as_bytes[self.padding_left])
+                    }
+                }
             }
+        }
+    }
 
+    struct BlockStream<'a, I> where I: IntoIterator<Item = u8> {
+        paddedMessageStream: &'a mut ShaPadder<I>
+    }
+
+    impl<'a, I> BlockStream<'a, I> where I: IntoIterator<Item = u8> {
+        pub fn new(paddedMessageStream: &mut ShaPadder<I>) -> BlockStream<I> {
+            BlockStream{paddedMessageStream: paddedMessageStream}
+        }
+    }
+
+    impl<'a, I> Iterator for BlockStream<'a, I> where I: IntoIterator<Item = u8> {
+        type Item = [u32;16];
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let blocksize = 64;
+            let bytes: Vec<u8> = self.paddedMessageStream.take(blocksize).collect();
+            if bytes.len() == 0 {
+                None
+            } else {
+                if bytes.len() != blocksize {
+                    panic!("Expected a block of {} bytes, but got only {}", blocksize, bytes.len());
+                }
+
+                let mut result: Self::Item = [0; 16];
+                for u_no in 0..16 {
+                    result[u_no] = u32_from_vec_slice(&bytes, u_no*4);
+                }
+
+                Some(result)
+            }
         }
     }
 
@@ -130,13 +177,126 @@ mod iters {
 
         )]
         fn test_sha_padding(input: Range<u8>, expected: &str, expected_len: usize) {
-            let result: Vec<u8> = ShaPadder::new(input.into_iter()).collect();
+            let result: Vec<u8> = ShaPadder::new(BlockParams{size: 64, reserve: 8}, input.into_iter()).collect();
 
             let hexstr = hex::encode(result);
             assert_eq!(hexstr.len(), 2*expected_len);
             assert_eq!(hexstr, expected);
         }
+
+        #[rstest(input, expected,
+          case::empty( 0u8..0u8,
+            vec![
+              [
+                0x8000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000
+             ]
+            ]),
+
+          case::one(   1u8..2u8,
+              vec![
+                [
+                  0x0180_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0008
+               ]
+              ]),
+
+          case::a_few( 1u8..16u8,
+              vec![
+                [
+                  0x0102_0304, 0x0506_0708, 0x090a_0b0c, 0x0d0e_0f80,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0078
+               ]
+              ]),
+
+          case::one_block( 0u8..0x37u8,
+              vec![
+                [
+                  0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f,
+                  0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
+                  0x2021_2223, 0x2425_2627, 0x2829_2a2b, 0x2c2d_2e2f,
+                  0x3031_3233, 0x3435_3680, 0x0000_0000, 0x0000_01b8
+               ]
+              ]),
+
+          case::just_two_blocks( 0u8..0x77u8,
+              vec![
+                [
+                  0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f,
+                  0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
+                  0x2021_2223, 0x2425_2627, 0x2829_2a2b, 0x2c2d_2e2f,
+                  0x3031_3233, 0x3435_3637, 0x3839_3a3b, 0x3c3d_3e3f
+                ], [
+                  0x4041_4243, 0x4445_4647, 0x4849_4a4b, 0x4c4d_4e4f,
+                  0x5051_5253, 0x5455_5657, 0x5859_5a5b, 0x5c5d_5e5f,
+                  0x6061_6263, 0x6465_6667, 0x6869_6a6b, 0x6c6d_6e6f,
+                  0x7071_7273, 0x7475_7680, 0x0000_0000, 0x0000_03b8
+                ]
+              ]),
+
+          case::two_full_blocks( 0u8..0x80u8,
+              vec![
+                [
+                  0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f,
+                  0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
+                  0x2021_2223, 0x2425_2627, 0x2829_2a2b, 0x2c2d_2e2f,
+                  0x3031_3233, 0x3435_3637, 0x3839_3a3b, 0x3c3d_3e3f
+                ], [
+                  0x4041_4243, 0x4445_4647, 0x4849_4a4b, 0x4c4d_4e4f,
+                  0x5051_5253, 0x5455_5657, 0x5859_5a5b, 0x5c5d_5e5f,
+                  0x6061_6263, 0x6465_6667, 0x6869_6a6b, 0x6c6d_6e6f,
+                  0x7071_7273, 0x7475_7677, 0x7879_7a7b, 0x7c7d_7e7f
+                ],
+                [
+                  0x8000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000,
+                  0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0400
+               ]
+              ]),
+
+        )]
+        fn test_sha_blocks(input: Range<u8>, expected: Vec<[u32;16]>) {
+            let mut sha_padder = ShaPadder::new(BlockParams{size: 64, reserve: 8}, input.into_iter());
+            let sha_blocks = BlockStream::new(&mut sha_padder);
+
+            let result: Vec<[u32;16]> = sha_blocks.collect();
+
+            assert_eq!(result, expected);
+        }
+
     }
 
 }
 
+mod conv {
+
+    pub fn u32_from_vec_slice(bytes: &Vec<u8>, offset: usize) -> u32 {
+        let mut fourbytes: [u8;4] = [0; 4];
+        fourbytes.copy_from_slice(&bytes[offset..offset+4]);
+
+        u32::from_be_bytes(fourbytes)
+    }
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+
+      extern crate hex;
+
+      #[test]
+      fn test_u32_from_vec_slice() {
+          let vec = hex::decode("0102030405060708").unwrap();
+
+          assert_eq!(u32_from_vec_slice(&vec, 0), 0x01020304u32);
+          assert_eq!(u32_from_vec_slice(&vec, 4), 0x05060708u32);
+
+      }
+  }
+}
