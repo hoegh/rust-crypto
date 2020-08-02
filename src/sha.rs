@@ -30,7 +30,7 @@ pub const SHA512: ShaParams<u64> = ShaParams {
 pub fn sha<'a, I, T>(params: ShaParams<T>, msg: I) -> Vec<u8> where I: IntoIterator<Item=u8>, T: std::clone::Clone
 {
     let block_stream = block_splitter::BlockStream::new(params.block_size, msg.into_iter());
-    let padded_stream = ShaPaddedStream::new(block_stream, params.block_size, params.length_size).collect::<Vec<_>>();
+    let padded_stream = ShaPaddedStream::new(block_stream, params.block_size, params.length_size);
 
     let mut h = params.h0;
     for block in padded_stream {
