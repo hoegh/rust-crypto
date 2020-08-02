@@ -1,3 +1,7 @@
 /target
 **/*.rs.bk
 Cargo.lock
+
+shortcases.txt
+longcases.txt
+shabytetestvectors/*
