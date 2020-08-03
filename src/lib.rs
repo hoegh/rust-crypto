@@ -3,5 +3,5 @@ mod padder;
 mod primitives;
 mod sha256;
 mod sha512;
-mod sha;
+pub mod sha;
 mod sha_tests;
