@@ -4,11 +4,11 @@ use crate::sha256::{sha256_block, u32_to_u8, H0 as SHA256_H0};
 use crate::sha512::{sha512_block, u64_to_u8, H0 as SHA512_H0};
 
 pub struct ShaParams<T> {
-    block_size: usize,
-    length_size: LengthSize,
-    h0: [T;8],
-    sha_func: fn([T;8], Vec<u8>) -> [T;8],
-    convert_func: fn(Vec<T>) -> Vec<u8>,
+    pub block_size: usize,
+    pub length_size: LengthSize,
+    pub h0: [T;8],
+    pub sha_func: fn([T;8], &[u8]) -> [T;8],
+    pub convert_func: fn(Vec<T>) -> Vec<u8>,
 }
 
 pub const SHA256: ShaParams<u32> = ShaParams {
@@ -34,7 +34,7 @@ pub fn sha<'a, I, T>(params: ShaParams<T>, msg: I) -> Vec<u8> where I: IntoItera
 
     let mut h = params.h0;
     for block in padded_stream {
-        h = (params.sha_func)(h, block);
+        h = (params.sha_func)(h, &block[..]);
     }
 
     return (params.convert_func)(h.to_vec());

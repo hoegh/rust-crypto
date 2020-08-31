@@ -16,11 +16,63 @@ impl LengthSize {
     }
 }
 
+
+pub struct Padder {
+    block_size: usize,
+    length_size: LengthSize,
+}
+
+impl Padder {
+    pub fn new(block_size: usize, length_size: LengthSize) -> Padder {
+        Padder{block_size, length_size}
+    }
+
+    fn pad_with_len(&self, total_length: ByteCounter, data: &mut Vec<u8>) {
+        let mut len_bytes = len_in_bits_encoded_as_bytes(total_length, self.length_size);
+        data.resize(self.block_size-len_bytes.len(), 0);
+        data.append(&mut len_bytes);
+    }
+
+    pub fn is_full_block(&self, size: usize) -> bool {
+        size == self.block_size
+    }
+
+    // Is there room for padding+length without having to make an extra block?
+    pub fn is_room(&self, size: usize) -> bool {
+        size+self.length_size.byte_size() < self.block_size
+    }
+
+    // total_length must account for all previous blocks as well as the supplied data block.
+    pub fn single_pad(&self, data: &[u8], total_length: ByteCounter) -> Vec<u8> {
+
+        let mut result = data.to_vec();
+        result.push(0x80);
+        self.pad_with_len(total_length, &mut result);
+
+        result
+    }
+
+    pub fn double_pad_1st_part(&self, data: &[u8]) -> Vec<u8> {
+        let mut result = data.to_vec();
+        result.push(0x80);
+        result.resize(self.block_size, 0);
+
+        result
+    }
+
+    // total_length must account for all previous blocks as well as the data block supplied to the 1st part.
+    pub fn double_pad_2nd_part(&self, total_length: ByteCounter) -> Vec<u8> {
+        let mut result: Vec<u8> = Vec::new();
+        self.pad_with_len(total_length, &mut result);
+
+        result
+    }
+}
+
 pub struct ShaPaddedStream<I> where I: IntoIterator<Item = InputItemType> {
     block_iter: I::IntoIter,
-    block_length: usize,
     length_in_bytes: ByteCounter,
-    length_size: LengthSize,
+    padder: Padder,
     padding_started: bool,
     done: bool,
 }
@@ -41,14 +93,10 @@ fn len_in_bits_encoded_as_bytes(len: ByteCounter, length_size: LengthSize) -> Ve
 
 impl<'a, I> ShaPaddedStream<I> where I: IntoIterator<Item = InputItemType> {
     pub fn new(blockstream: I, block_length: usize, length_size: LengthSize) -> ShaPaddedStream<I> {
-        ShaPaddedStream{block_iter: blockstream.into_iter(), block_length, length_in_bytes:0, length_size, padding_started: false, done: false}
+        let padder = Padder::new(block_length, length_size);
+        ShaPaddedStream{block_iter: blockstream.into_iter(), padder, length_in_bytes:0, padding_started: false, done: false}
     }
 
-    fn pad_with_len(&mut self, buffer: &mut OutputItemType) {
-        let mut len_bytes = len_in_bits_encoded_as_bytes(self.length_in_bytes, self.length_size);
-        buffer.resize(self.block_length-len_bytes.len(), 0);
-        buffer.append(&mut len_bytes);
-    }
 }
 
 impl<'a, I> Iterator for ShaPaddedStream<I> where I: IntoIterator<Item = InputItemType> {
@@ -59,36 +107,32 @@ impl<'a, I> Iterator for ShaPaddedStream<I> where I: IntoIterator<Item = InputIt
             Some(block) => {
                 self.length_in_bytes += u128::try_from(block.len()).unwrap(); //usize is platformdependant
 
-                if block.len() < self.block_length {
-                    let mut result = block.to_vec();
-                    result.push(0x80); //start of padding marker
+                if self.padder.is_full_block(block.len()) {
+                    return Some(block);
+                } else {
+                    let result;
 
-                    if result.len()+self.length_size.byte_size() > self.block_length {
-                        // not enough room for the entire size, so just pad out, and complete it
-                        // on the next call to next()
-                        result.resize(self.block_length, 0);
-                        self.padding_started = true;
-                    } else {
-                        self.pad_with_len(&mut result);
+                    if self.padder.is_room(block.len()) {
+                        result = self.padder.single_pad(&block, self.length_in_bytes);
                         self.done = true;
+                    } else {
+                        result = self.padder.double_pad_1st_part(&block);
+                        self.padding_started = true;
                     }
+
                     return Some(result);
                 }
-
-                return Some(block);
             }
             None => {
                 if self.done {
                     return None
                 } else {
                     self.done = true;
-
-                    let mut result = Vec::new();
-                    if !self.padding_started {
-                        result.push(0x80);
+                    if self.padding_started {
+                        return Some(self.padder.double_pad_2nd_part(self.length_in_bytes));
+                    } else {
+                        return Some(self.padder.single_pad(&[], self.length_in_bytes))
                     }
-                    self.pad_with_len(&mut result);
-                    return Some(result);
                 }
             }
         }

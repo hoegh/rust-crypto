@@ -12,7 +12,7 @@ const K:[u32;64] = [
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-fn message_schedule(m: Vec<u8>) -> [u32;64] {
+fn message_schedule(m: &[u8]) -> [u32;64] {
     let mut w: [u32;64] = [0;64];
 
     m.chunks(4)
@@ -31,7 +31,7 @@ fn message_schedule(m: Vec<u8>) -> [u32;64] {
     return w;
 }
 
-pub fn sha256_block(hash: [u32;8], m: Vec<u8>) -> [u32;8] {
+pub fn sha256_block(hash: [u32;8], m: &[u8]) -> [u32;8] {
     let w = message_schedule(m);
     let mut a = hash[0];
     let mut b = hash[1];
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn test_abc_hash() {
         let m = hex::decode("61626380000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018").unwrap();
-        let mut result = sha256_block(H0, m);
+        let result = sha256_block(H0, &m);
         let result_bytes = u32_to_u8(result.to_vec());
         assert_eq!(hex::encode(result_bytes), "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD".to_lowercase());
     }

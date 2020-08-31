@@ -28,7 +28,7 @@ const K:[u64;80] = [
     0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
 ];
 
-fn message_schedule(m: Vec<u8>) -> [u64;80] {
+fn message_schedule(m: &[u8]) -> [u64;80] {
     let mut w: [u64;80] = [0;80];
 
     m.chunks(8)
@@ -47,7 +47,7 @@ fn message_schedule(m: Vec<u8>) -> [u64;80] {
     return w;
 }
 
-pub fn sha512_block(hash: [u64;8], m: Vec<u8>) -> [u64;8] {
+pub fn sha512_block(hash: [u64;8], m: &[u8]) -> [u64;8] {
     let w = message_schedule(m);
     let mut a = hash[0];
     let mut b = hash[1];
@@ -110,7 +110,7 @@ mod tests {
         let m = hex::decode(
             "61626380000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
              00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018").unwrap();
-        let mut result = sha512_block(H0, m);
+        let result = sha512_block(H0, &m);
         let result_bytes = u64_to_u8(result.to_vec());
         assert_eq!(hex::encode(result_bytes), "DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F".to_lowercase());
     }
