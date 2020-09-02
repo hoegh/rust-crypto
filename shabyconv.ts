@@ -1,3 +1,7 @@
+/* A utility for convering the SHA Byte test vectors to something than is easier to
+ * write Rust test cases from.
+ */
+
 // deno run --allow-read --allow-write shabyconv.ts
 
 import { readFileStr } from 'https://deno.land/std/fs/read_file_str.ts';
@@ -23,7 +27,6 @@ function shabytest(testdata: string, render: (name: string, msg: string, digest:
     } else if (line.startsWith("MD =")) {
       digest = line.slice(5);
 
-      //let shortMsg = msg.length>30 ? msg.slice(0,30)+"..." : msg;
       result += render(name, msg, digest) + '\n';
     }
 
